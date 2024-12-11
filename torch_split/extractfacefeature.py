@@ -149,17 +149,17 @@ def extract_eight_regions_and_features(img_pth, processor, superpoint_model, dev
 
     return features_dict
 
+
 def extract_face_region(img_pth, processor=processor, superpoint_model=superpoint_model, device=device, max_num_nodes=500, feature_dim=256):
     """
-    將臉分成八個區域，提取各區域特徵並合併回傳。
-    回傳: (combined_descriptors, combined_keypoints)
-          若無法偵測臉則回傳(None, None)
+    將臉分成多個區域，提取各區域特徵並合併回傳。
+    若無法偵測臉則回傳(None, None)
     """
     gray, points = extract_face_keypoints(img_pth)
     if gray is None:
         return None, None
 
-    # 可依需求修改區域切分
+    # 您可在此定義8個或更多區域，以下僅示範4個區域
     regions = {
         "left_eye": np.arange(42, 48),
         "right_eye": np.arange(36, 42),
@@ -173,13 +173,19 @@ def extract_face_region(img_pth, processor=processor, superpoint_model=superpoin
     for r_name, r_idxs in regions.items():
         region_img_pil = extract_region(gray, points, r_idxs)
         des, kp = extract_superpoint_features_single_region(region_img_pil, processor, superpoint_model, device, max_num_nodes, feature_dim)
-        if des is not None:
+
+        # 確保 des 和 kp 不為 None，且數量匹配
+        if des is not None and kp is not None and des.shape[0] == kp.shape[0]:
+            # 若某區域只有一個描述子也能正常處理
             all_des.append(des)
             all_kp.append(kp)
 
+    # 若全部區域都無特徵
     if len(all_des) == 0:
         return None, None
 
+    # 確保 concat 前，各區 array 形狀一致，如: (n_i, d)
+    # 只要都是同樣的第二維(feature_dim)就不會有問題
     combined_descriptors = np.concatenate(all_des, axis=0)
     combined_keypoints = np.concatenate(all_kp, axis=0)
 
