@@ -50,6 +50,10 @@ def extract_superpoint_features(face_img_pil, processor, superpoint_model, devic
     keypoint_coords = keypoints.cpu().numpy()
     descriptors = descriptors.cpu().numpy()
 
+    # 確保 descriptors 為二維
+    if descriptors.ndim == 1:
+        descriptors = descriptors.reshape(1, -1)
+
     scaler = StandardScaler()
     descriptors = scaler.fit_transform(descriptors)
 
@@ -58,43 +62,125 @@ def extract_superpoint_features(face_img_pil, processor, superpoint_model, devic
         descriptors = descriptors[indices]
         keypoint_coords = keypoint_coords[indices]
 
-    return descriptors, keypoint_coords 
+    return descriptors, keypoint_coords
 
-def extract_face_region(img_pth):
-    """
-    使用 dlib 檢測臉部並提取臉部區域。
+def extract_superpoint_features_single_region(img_pil, processor, superpoint_model, device, max_num_nodes=500, feature_dim=256):
+    # 單一區域特徵提取函式
+    inputs = processor(img_pil, return_tensors="pt").to(device)
+    with torch.no_grad():
+        outputs = superpoint_model(**inputs)
 
-    Args:
-        img_pth (str): 圖像路徑。
+    image_mask = outputs.mask[0]
+    image_indices = torch.nonzero(image_mask).squeeze()
+    if image_indices.numel() == 0:
+        return None, None
 
-    Returns:
-        face_img_pil (PIL.Image): 提取的臉部圖像 (RGB)。
-        keypoint_coords (np.ndarray): 臉部關鍵點座標 (68 個點)。
-    """
+    keypoints = outputs.keypoints[0][image_indices]
+    descriptors = outputs.descriptors[0][image_indices]
+
+    keypoint_coords = keypoints.cpu().numpy()
+    descriptors = descriptors.cpu().numpy()
+
+    # 確保 descriptors 為二維
+    if descriptors.ndim == 1:
+        descriptors = descriptors.reshape(1, -1)
+
+    scaler = StandardScaler()
+    descriptors = scaler.fit_transform(descriptors)
+
+    if descriptors.shape[0] > max_num_nodes:
+        indices = np.random.choice(descriptors.shape[0], max_num_nodes, replace=False)
+        descriptors = descriptors[indices]
+        keypoint_coords = keypoint_coords[indices]
+
+    return descriptors, keypoint_coords
+
+def extract_face_keypoints(img_pth):
     img = cv2.imread(img_pth)
     if img is None:
         raise ValueError(f"Unable to load image at path: {img_pth}")
-    
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
     faces = detector(gray)
     if len(faces) == 0:
         print(f"No faces detected in image {img_pth}.")
         return None, None
-
     face = faces[0]
     landmarks = predictor(gray, face)
-    points = np.array(
-        [(landmarks.part(n).x, landmarks.part(n).y) for n in range(68)],
-        dtype=np.int32,
-    )
+    points = np.array([(landmarks.part(n).x, landmarks.part(n).y) for n in range(68)], dtype=np.int32)
+    return gray, points
 
+def extract_region(gray, points, point_indices):
+    region_points = points[point_indices]
     mask = np.zeros_like(gray)
-    cv2.fillConvexPoly(mask, points, 255)
-    face_img = cv2.bitwise_and(gray, gray, mask=mask)
+    cv2.fillConvexPoly(mask, region_points, 255)
+    region_img = cv2.bitwise_and(gray, gray, mask=mask)
+    region_img_pil = Image.fromarray(region_img).convert("RGB")
+    return region_img_pil
 
-    face_img_pil = Image.fromarray(face_img).convert("RGB")
+def extract_eight_regions_and_features(img_pth, processor, superpoint_model, device,
+                                       max_num_nodes=500, feature_dim=256):
+    """
+    將臉部分成 8 個區域，分別提取特徵。
+    """
+    gray, points = extract_face_keypoints(img_pth)
+    if gray is None:
+        return None
 
-    keypoint_coords = points  # 或者根據需要返回其他關鍵點信息
+    # 以下區域定義為示範，可調整:
+    regions = {
+        "left_eyebrow": np.arange(22, 27),
+        "right_eyebrow": np.arange(17, 22),
+        "left_eye": np.arange(42, 48),
+        "right_eye": np.arange(36, 42),
+        "nose": np.arange(27, 36),
+        "upper_mouth": np.arange(48, 55),
+        "lower_mouth": np.arange(55, 68),
+        "face_contour": np.arange(0, 17)
+    }
 
-    return face_img_pil, keypoint_coords
+    features_dict = {}
+    for region_name, idxs in regions.items():
+        region_img_pil = extract_region(gray, points, idxs)
+        des, kp = extract_superpoint_features(region_img_pil, processor, superpoint_model, device, max_num_nodes, feature_dim)
+        features_dict[region_name] = {
+            "descriptors": des,
+            "keypoints": kp
+        }
+
+    return features_dict
+
+def extract_face_region(img_pth, processor=processor, superpoint_model=superpoint_model, device=device, max_num_nodes=500, feature_dim=256):
+    """
+    將臉分成八個區域，提取各區域特徵並合併回傳。
+    回傳: (combined_descriptors, combined_keypoints)
+          若無法偵測臉則回傳(None, None)
+    """
+    gray, points = extract_face_keypoints(img_pth)
+    if gray is None:
+        return None, None
+
+    # 可依需求修改區域切分
+    regions = {
+        "left_eye": np.arange(42, 48),
+        "right_eye": np.arange(36, 42),
+        "nose": np.arange(27, 36),
+        "face_contour": np.arange(0, 68)
+    }
+
+    all_des = []
+    all_kp = []
+
+    for r_name, r_idxs in regions.items():
+        region_img_pil = extract_region(gray, points, r_idxs)
+        des, kp = extract_superpoint_features_single_region(region_img_pil, processor, superpoint_model, device, max_num_nodes, feature_dim)
+        if des is not None:
+            all_des.append(des)
+            all_kp.append(kp)
+
+    if len(all_des) == 0:
+        return None, None
+
+    combined_descriptors = np.concatenate(all_des, axis=0)
+    combined_keypoints = np.concatenate(all_kp, axis=0)
+
+    return combined_descriptors, combined_keypoints
