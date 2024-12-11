@@ -65,7 +65,6 @@ def extract_superpoint_features(face_img_pil, processor, superpoint_model, devic
     return descriptors, keypoint_coords
 
 def extract_superpoint_features_single_region(img_pil, processor, superpoint_model, device, max_num_nodes=500, feature_dim=256):
-    # 單一區域特徵提取函式
     inputs = processor(img_pil, return_tensors="pt").to(device)
     with torch.no_grad():
         outputs = superpoint_model(**inputs)
@@ -78,12 +77,16 @@ def extract_superpoint_features_single_region(img_pil, processor, superpoint_mod
     keypoints = outputs.keypoints[0][image_indices]
     descriptors = outputs.descriptors[0][image_indices]
 
-    keypoint_coords = keypoints.cpu().numpy()
-    descriptors = descriptors.cpu().numpy()
+    keypoint_coords = keypoints.cpu().numpy()   # 可能為 (n,2) 或 (2,)
+    descriptors = descriptors.cpu().numpy()     # 可能為 (n,d) 或 (d,)
 
     # 確保 descriptors 為二維
     if descriptors.ndim == 1:
         descriptors = descriptors.reshape(1, -1)
+
+    # 確保 keypoint_coords 為二維 (n, 2)
+    if keypoint_coords.ndim == 1:
+        keypoint_coords = keypoint_coords.reshape(1, 2)
 
     scaler = StandardScaler()
     descriptors = scaler.fit_transform(descriptors)
